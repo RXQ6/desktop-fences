@@ -10,6 +10,7 @@ use parking_lot::Mutex;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::config::{Config, Fence};
@@ -23,8 +24,12 @@ const TIMER_INTERVAL_MS: u32 = 2000; // 2 秒重绘一次
 struct WindowState {
     config: Arc<Mutex<Config>>,
     desktop: std::path::PathBuf,
+    config_path: std::path::PathBuf,
     fence_id: String,
     drop_target: *mut c_void,
+    dragging: bool,
+    drag_off_x: i32,
+    drag_off_y: i32,
 }
 
 /// 注册窗口类（只调一次）
@@ -95,8 +100,12 @@ pub unsafe fn create_fence_window(
     let state = Box::new(WindowState {
         config: config.clone(),
         desktop: desktop.clone(),
+        config_path: config_path.clone(),
         fence_id: fence.id.clone(),
         drop_target,
+        dragging: false,
+        drag_off_x: 0,
+        drag_off_y: 0,
     });
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 
@@ -126,19 +135,32 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_LBUTTONDOWN => {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
-            if !ptr.is_null() {
-                let state = &*ptr;
-                let x = (lparam.0 & 0xFFFF) as i16 as i32;
-                let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
+            if ptr.is_null() {
+                return LRESULT(0);
+            }
+            let state = &mut *ptr;
+            let x = (lparam.0 & 0xFFFF) as i16 as i32;
+            let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
 
-                let mut rect = RECT::default();
-                let _ = GetClientRect(hwnd, &mut rect);
-                let width = rect.right - rect.left;
-                let height = rect.bottom - rect.top;
+            let mut rect = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rect);
+            let width = rect.right - rect.left;
+            let height = rect.bottom - rect.top;
 
+            // 先判断点中的是不是某个图标
+            let hit_item = {
+                let cfg = state.config.lock();
+                cfg.fences
+                    .iter()
+                    .find(|f| f.id == state.fence_id)
+                    .and_then(|f| crate::fence::render::hit_test_item(f, x, y, width, height))
+            };
+
+            if hit_item.is_some() {
+                // 命中图标：走原有的 OLE 拖出（文件物理不动）
                 let cfg = state.config.lock();
                 if let Some(fence) = cfg.fences.iter().find(|f| f.id == state.fence_id) {
-                    if let Some(idx) = crate::fence::render::hit_test_item(fence, x, y, width, height) {
+                    if let Some(idx) = hit_item {
                         if let Some(item) = fence.items.get(idx) {
                             let abs = state.desktop.join(&item.path);
                             if abs.is_file() {
@@ -151,6 +173,68 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         }
                     }
                 }
+            } else {
+                // 点中标题栏 / 空白处：拖动整个框
+                let mut wr = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut wr);
+                let mut cur = POINT::default();
+                let _ = GetCursorPos(&mut cur);
+                state.dragging = true;
+                state.drag_off_x = cur.x - wr.left;
+                state.drag_off_y = cur.y - wr.top;
+                let _ = SetCapture(hwnd);
+            }
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                if state.dragging {
+                    let mut cur = POINT::default();
+                    let _ = GetCursorPos(&mut cur);
+                    let new_x = cur.x - state.drag_off_x;
+                    let new_y = cur.y - state.drag_off_y;
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        new_x,
+                        new_y,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                    // 立即重绘，让分层位图跟随窗口移动
+                    render_window(hwnd, &state.config, &state.desktop, &state.fence_id);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_LBUTTONUP => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                if state.dragging {
+                    state.dragging = false;
+                    let _ = ReleaseCapture();
+                    // 持久化新位置到配置
+                    let mut wr = RECT::default();
+                    let _ = GetWindowRect(hwnd, &mut wr);
+                    let mut cfg = state.config.lock();
+                    if let Some(fence) = cfg.fences.iter_mut().find(|f| f.id == state.fence_id) {
+                        fence.rect[0] = wr.left;
+                        fence.rect[1] = wr.top;
+                    }
+                    let _ = cfg.save(&state.config_path);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_CAPTURECHANGED => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                state.dragging = false;
             }
             LRESULT(0)
         }
@@ -172,9 +256,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
-
-// 处理点击：OLE 拖放暂时禁用
-// unsafe fn handle_click_and_drag(...) { ... }
 
 /// 渲染指定栅栏到分层窗口
 fn render_window(
@@ -241,8 +322,13 @@ fn render_window(
         crate::fence::render::render_fence_by_id(hdc_mem, width, height, &cfg, desktop, fence_id);
         drop(cfg);
 
-        // 提交到分层窗口
-        let screen_pt = POINT { x: 0, y: 0 };
+        // 用窗口当前屏幕位置作为分层窗口位置，避免每次重绘被钉回 (0,0)
+        let mut win_rect = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut win_rect);
+        let screen_pt = POINT {
+            x: win_rect.left,
+            y: win_rect.top,
+        };
         let pt_src = POINT { x: 0, y: 0 };
         let size = SIZE { cx: width, cy: height };
         let mut blend = BLENDFUNCTION {
