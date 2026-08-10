@@ -50,6 +50,22 @@ pub unsafe fn register_class(hinstance: HMODULE) {
     }
 }
 
+/// 关闭其他进程中同类的旧栅栏窗口，避免用户双击新 exe 时仍在跑旧的（未修复）窗口。
+/// 旧进程收到 WM_CLOSE 后会走 WM_DESTROY → PostQuitMessage 自行退出。
+pub unsafe fn close_existing_instances() {
+    for _ in 0..10 {
+        match FindWindowW(FENCE_CLASS_NAME, None) {
+            Ok(hwnd) if !hwnd.is_invalid() => {
+                let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            _ => break,
+        }
+    }
+    // 给旧进程一点时间退出，避免新旧窗口短暂重叠
+    std::thread::sleep(std::time::Duration::from_millis(300));
+}
+
 /// 创建一个栅栏窗口
 pub unsafe fn create_fence_window(
     hinstance: HMODULE,
@@ -364,6 +380,19 @@ fn render_window(
         let cfg = config.lock();
         crate::fence::render::render_fence_by_id(hdc_mem, width, height, &cfg, desktop, fence_id);
         drop(cfg);
+
+        // 关键修复：分层窗口的命中测试按"每像素 alpha"判断是否属于窗口。
+        // 背景被清零(alpha=0) → 整框点击穿透，WM_LBUTTONDOWN 收不到 → 拖不动。
+        // 这里把整张位图 alpha 抬高到至少 MIN_ALPHA：框内任意位置都算窗口的一部分
+        // （可点击、可拖动），而 MIN_ALPHA 很小时视觉上仍是淡面板/透明外观。
+        // 想更透明就把 MIN_ALPHA 调小（1 = 几乎全透明但依然可点击）。
+        const MIN_ALPHA: u32 = 40;
+        for px in pixels.iter_mut() {
+            let a = (*px >> 24) & 0xFF;
+            if a < MIN_ALPHA {
+                *px = (*px & 0x00FF_FFFF) | (MIN_ALPHA << 24);
+            }
+        }
 
         // 用窗口当前屏幕位置作为分层窗口位置，避免每次重绘被钉回 (0,0)
         let mut win_rect = RECT::default();

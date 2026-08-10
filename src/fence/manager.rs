@@ -55,6 +55,9 @@ impl FenceManager {
 
     pub fn run(mut self) {
         unsafe {
+            // 先关掉可能残留的旧实例（旧 exe 仍在运行时，双击新版会跑在旧窗口上导致"没修好"）
+            crate::fence::window::close_existing_instances();
+
             let hinstance =
                 GetModuleHandleW(None).unwrap_or_else(|_| HMODULE(std::ptr::null_mut()));
 
