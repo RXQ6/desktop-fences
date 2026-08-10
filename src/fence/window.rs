@@ -118,6 +118,16 @@ pub unsafe fn create_fence_window(
     // 首次渲染
     render_window(hwnd, &config, &desktop, &fence.id);
 
+    // 关键修复：分层窗口的透明像素(Alpha=0)默认点击穿透，
+    // 导致标题栏/空白区域收不到 WM_LBUTTONDOWN，整框无法拖动。
+    // 用 SetWindowRgn 把整个客户区设为命中区域，使点击在框内任意位置
+    // 都能到达 wnd_proc（拖动/图标拖出逻辑即可生效），而视觉仍由分层
+    // 位图决定（保持透明）。区域坐标用客户区矩形 (0,0,w,h)。
+    let rgn = CreateRectRgn(0, 0, w, h);
+    if !rgn.is_invalid() {
+        let _ = SetWindowRgn(hwnd, rgn, true);
+    }
+
     // 定时重绘
     let _ = SetTimer(hwnd, TIMER_ID_REPAINT, TIMER_INTERVAL_MS, None);
 
