@@ -117,6 +117,33 @@ fn saved_positions() -> &'static StdMutex<HashMap<String, (i32, i32)>> {
     SAVED_POSITIONS.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
+/// [诊断] 输出桌面窗口层级：Progman / SHELLDLL_DefView / WorkerW / SysListView32
+pub fn probe_desktop_layers() {
+    unsafe {
+        let progman = FindWindowW(w!("Progman"), None).ok();
+        let mut defview: HWND = HWND::default();
+        let _ = EnumWindows(
+            Some(enum_find_defview),
+            LPARAM(&mut defview as *mut HWND as isize),
+        );
+        let workerw = if defview.is_invalid() {
+            None
+        } else {
+            GetWindow(defview, GW_HWNDNEXT)
+                .ok()
+                .filter(|h| !h.is_invalid())
+        };
+        let lv = find_desktop_listview();
+        tracing::info!(
+            "[诊断] 桌面层级: Progman={:p}, SHELLDLL_DefView={:p}, WorkerW(DefView下一兄弟)={:p}, SysListView32={:p}",
+            progman.map(|h| h.0).unwrap_or(std::ptr::null_mut()),
+            defview.0,
+            workerw.map(|h| h.0).unwrap_or(std::ptr::null_mut()),
+            lv.map(|h| h.0).unwrap_or(std::ptr::null_mut())
+        );
+    }
+}
+
 /// 找到桌面 SysListView32 控件句柄
 pub fn find_desktop_listview() -> Option<HWND> {
     unsafe {

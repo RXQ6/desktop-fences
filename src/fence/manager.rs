@@ -61,6 +61,9 @@ impl FenceManager {
             // 注册窗口类
             crate::fence::window::register_class(hinstance);
 
+            // [诊断] 输出桌面窗口层级，确认图标层/WorkerW 的真实结构
+            desktop::probe_desktop_layers();
+
             // 顶层窗口（parent = None）：确保稳定收到鼠标输入、可被拖动。
             // 不嵌入 WorkerW —— 嵌入式会被桌面图标层挡在后面，导致点击/拖动失效。
             let parent = HWND::default();

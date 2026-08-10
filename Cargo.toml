@@ -40,3 +40,9 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# 临时诊断版：与主程序同名输出（避免主 exe 被运行中进程锁住时无法链接）
+# 诊断完成后删除
+[[bin]]
+name = "desktop-fences-dbg"
+path = "src/main.rs"

@@ -61,7 +61,10 @@ pub unsafe fn create_fence_window(
 ) -> HWND {
     let [x, y, w, h] = fence.rect;
 
-    let ex_style = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    // 注意：不再用 WS_EX_NOACTIVATE —— 顶层窗口配 NOACTIVATE 时点击不会被
+    // 正常派发（且永远拿不到焦点导致 ESC 退出失效）。改为可激活，点击后栅栏
+    // 获得输入焦点，WM_LBUTTONDOWN / WM_KEYDOWN(ESC) 都能收到。
+    let ex_style = WS_EX_LAYERED | WS_EX_TOOLWINDOW;
     let style = WS_POPUP;
 
     let hwnd = match CreateWindowExW(
@@ -118,6 +121,24 @@ pub unsafe fn create_fence_window(
     // 定时重绘
     let _ = SetTimer(hwnd, TIMER_ID_REPAINT, TIMER_INTERVAL_MS, None);
 
+    // [诊断] 输出窗口信息：句柄 / 父窗口 / 样式 / 屏幕矩形
+    unsafe {
+        let parent = GetParent(hwnd).unwrap_or_default();
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        let mut wr = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut wr);
+        tracing::info!(
+            "[诊断] 栅栏窗口 [{}] hwnd={:p} parent={:p} style=0x{:X} exstyle=0x{:X} rect=({},{},{},{})",
+            fence.id,
+            hwnd.0,
+            parent.0,
+            style,
+            ex,
+            wr.left, wr.top, wr.right, wr.bottom
+        );
+    }
+
     tracing::info!("栅栏窗口已创建: {} ({})", fence.name, fence.id);
     hwnd
 }
@@ -158,6 +179,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 
             if hit_item.is_some() {
                 // 命中图标：走原有的 OLE 拖出（文件物理不动）
+                tracing::info!("[{}] 命中图标，开始 OLE 拖出", state.fence_id);
                 let cfg = state.config.lock();
                 if let Some(fence) = cfg.fences.iter().find(|f| f.id == state.fence_id) {
                     if let Some(idx) = hit_item {
@@ -182,7 +204,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 state.dragging = true;
                 state.drag_off_x = cur.x - wr.left;
                 state.drag_off_y = cur.y - wr.top;
-                let _ = SetCapture(hwnd);
+                let prev = SetCapture(hwnd);
+                tracing::info!(
+                    "[{}] 进入移动模式: 点击({},{}), 窗口rect=({},{}), 捕获上一窗口={:p}",
+                    state.fence_id, x, y, wr.left, wr.top, prev.0
+                );
             }
             LRESULT(0)
         }
@@ -220,6 +246,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     // 持久化新位置到配置
                     let mut wr = RECT::default();
                     let _ = GetWindowRect(hwnd, &mut wr);
+                    tracing::info!(
+                        "[{}] 移动结束，新位置=({},{}), 保存配置",
+                        state.fence_id, wr.left, wr.top
+                    );
                     let mut cfg = state.config.lock();
                     if let Some(fence) = cfg.fences.iter_mut().find(|f| f.id == state.fence_id) {
                         fence.rect[0] = wr.left;
@@ -234,6 +264,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
             if !ptr.is_null() {
                 let state = &mut *ptr;
+                if state.dragging {
+                    tracing::info!("[{}] 捕获被抢占（拖动被取消）", state.fence_id);
+                }
                 state.dragging = false;
             }
             LRESULT(0)
