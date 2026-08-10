@@ -6,6 +6,7 @@
 //! - `DataObject`：作为拖拽源的数据对象，向 Explorer 提供 CF_HDROP。
 //! - `DropSource`：拖拽源的"是否继续 / 反馈"回调。
 
+use std::collections::HashSet;
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::path::PathBuf;
@@ -23,6 +24,7 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::config::Config;
+use crate::platform::desktop;
 
 // ---- 接口 IID（与 windows-rs define_interface! 生成的一致）----
 const IID_IUNKNOWN: GUID = GUID::from_u128(0x0000_0000_0000_0000_c000_0000_0000_0046);
@@ -40,6 +42,7 @@ const TIMER_ID_REPAINT: usize = 1;
 // ============================ DropTarget ============================
 
 #[repr(C)]
+#[allow(non_snake_case)]
 struct DropTarget {
     lpVtbl: *const IDropTarget_Vtbl,
     ref_count: AtomicU32,
@@ -151,6 +154,7 @@ unsafe extern "system" fn drop_target_drop(
         if !hdrop.is_invalid() {
             let count = DragQueryFileW(hdrop, 0xFFFF_FFFF, None);
             let mut added = false;
+            let mut moved_names: HashSet<String> = HashSet::new();
             for i in 0..count {
                 let mut buf = [0u16; 260];
                 let len = DragQueryFileW(hdrop, i, Some(&mut buf));
@@ -165,6 +169,7 @@ unsafe extern "system" fn drop_target_drop(
                         let mut cfg = obj.config.lock();
                         cfg.move_item_to_fence(&obj.fence_id, &fname);
                         let _ = cfg.save(&obj.config_path);
+                        moved_names.insert(fname);
                         added = true;
                     }
                 }
@@ -172,6 +177,8 @@ unsafe extern "system" fn drop_target_drop(
             if added {
                 // 立即重绘该栅栏
                 let _ = PostMessageW(obj.hwnd, WM_TIMER, WPARAM(TIMER_ID_REPAINT), LPARAM(0));
+                // 把刚归入栅栏的文件从桌面图标层隐藏（去重显示）
+                desktop::hide_icons_for_names(&moved_names);
             }
         }
     }
@@ -182,6 +189,7 @@ unsafe extern "system" fn drop_target_drop(
 // ============================ DataObject ============================
 
 #[repr(C)]
+#[allow(non_snake_case)]
 struct DataObject {
     lpVtbl: *const IDataObject_Vtbl,
     ref_count: AtomicU32,
@@ -384,6 +392,7 @@ unsafe fn build_hdrop(files: &[String]) -> HGLOBAL {
 // ============================ DropSource ============================
 
 #[repr(C)]
+#[allow(non_snake_case)]
 struct DropSource {
     lpVtbl: *const IDropSource_Vtbl,
     ref_count: AtomicU32,

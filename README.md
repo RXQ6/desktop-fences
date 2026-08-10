@@ -18,6 +18,8 @@
 | **收纳规则** | ✓ | `sweep_rules` 按扩展名自动归类 |
 | **禅模式** | ✓ | Ctrl+Shift+H 一键隐藏所有栅栏 |
 | **桌面清扫** | ✓ | Ctrl+Shift+S 重新分类所有文件 |
+| **隐藏原桌面图标** | ✓ | 已归入栅栏的文件从 Explorer 桌面列表移出视野，避免重复显示（best-effort，依赖 SHELLDLL_DefView；不支持时退化为普通顶层窗口） |
+| **GUI 设置面板** | ✓ | Ctrl+Shift+O 打开，可视化增删栅栏 / 收纳规则，免手编 JSON |
 | **开机自启** | ✓ | 读写 HKCU\...\Run 注册表 |
 | 翻页动画 | ✗ | 留给后续 |
 | 文字阴影 | ✗ | 留给后续（需 DirectWrite） |
@@ -44,6 +46,7 @@ cargo run --release
 |---|---|
 | `Ctrl+Shift+H` | 禅模式：隐藏/显示所有栅栏 |
 | `Ctrl+Shift+S` | 桌面清扫：重新按规则分类所有文件 |
+| `Ctrl+Shift+O` | 设置面板：可视化增删栅栏与收纳规则 |
 | `ESC` | 退出程序 |
 
 ## 交互
@@ -51,6 +54,7 @@ cargo run --release
 - **从 Explorer 拖文件到栅栏**：文件被加入栅栏（物理位置不变）
 - **从栅栏拖图标到 Explorer**：复制文件（原位置不变）
 - **栅栏自动刷新**：桌面文件变动后 2 秒内更新
+- **`Ctrl+Shift+O` 打开设置面板**：可视化新建/删除栅栏、增删收纳规则，改动即时写入配置并应用到所有栅栏（无需手编 JSON）
 
 ## 默认栅栏布局
 
@@ -99,12 +103,10 @@ desktop-fences/
 ├── Cargo.toml
 ├── README.md
 └── src/
-    ├── main.rs                  # 入口 + OLE 初始化
+    ├── main.rs                  # 入口 + 模块装配
     ├── config.rs                # 虚拟分组配置 + 收纳规则 + 桌面清扫
-    ├── dragdrop/
-    │   ├── mod.rs               # 拖放上下文
-    │   ├── target.rs            # IDropTarget（接收拖入）
-    │   └── source.rs            # IDataObject + IDropSource（拖出）
+    ├── dragdrop.rs              # 手搓 OLE COM：IDropTarget / IDataObject / IDropSource
+    ├── settings.rs              # GUI 设置面板（Ctrl+Shift+O，Win32 内联控件）
     ├── fence/
     │   ├── mod.rs               # FenceApp 入口
     │   ├── manager.rs           # 多栅栏管理 + 热键 + 消息循环
@@ -116,7 +118,7 @@ desktop-fences/
     │   └── watch.rs             # ReadDirectoryChangesW
     └── platform/
         ├── mod.rs
-        ├── desktop.rs           # WorkerW 嵌入
+        ├── desktop.rs           # WorkerW 嵌入 + 桌面图标隐藏/恢复
         └── startup.rs           # 开机自启（注册表）
 ```
 
@@ -137,21 +139,32 @@ let on = platform::startup::is_startup_enabled();
 
 当前 `main.rs` 只查询并打印状态，不自动开启——避免未经用户同意改注册表。
 
-## 已知限制 / 可能的编译问题
+## 编译与已知限制
 
-代码未在沙箱内编译验证（环境无 Rust 工具链）。`windows` crate 0.58 的 API 在不同小版本可能有差异，遇到编译错误时优先检查：
+已编译验证通过：**Rust 1.97.1 + WinLibs MinGW GCC (x86_64-pc-windows-gnu) + windows crate 0.58.0，0 error / 0 warning**。以下为开发过程中已在 windows 0.58 上确认、与直觉不同的 API 要点（供二次开发参考）：
 
-1. **HWND / HICON / HINSTANCE 的 null 构造**：`HWND(std::ptr::null_mut())` vs `HWND::default()`
-2. **`SendMessageTimeoutW` 返回类型**：`Result<()>` 或 `Result<usize>`
-3. **`EnumWindows` 回调签名**：`ENUMWNDCALLBACK` 类型定义
-4. **`BOOL` 构造**：`BOOL(0)`/`BOOL(1)` vs `BOOL(false)`/`BOOL(true)`
-5. **`ReadDirectoryChangesW` 的 bytes_returned 参数**：`Option<*mut u32>` vs `*mut u32`
-6. **`DragQueryFileW` 签名**：`Option<&mut [u16]>` vs `PWSTR`
-7. **`implement` 宏的 IDropTarget/IDataObject 方法签名**：参数可能是值或引用，`pt: POINT` vs `&POINT`
-8. **`RegOpenKeyExW` 的 hkey 参数**：`HKEY` vs `&mut HKEY`
-9. **`GlobalAlloc` 返回类型**：`Result<HGLOBAL>` vs `HGLOBAL`
+1. **HWND / HICON / HINSTANCE 的 null 构造**：非 nullable 句柄用 `HWND::default()`（底层为 null），不要用 `Option<HWND>` 当 `Param<HWND>` 传参
+2. **`GetModuleHandleW` 返回 `HMODULE`**：传给 `RegisterClassExW` / `CreateWindowExW` 的 `hInstance` 需 `HINSTANCE`，用 `.into()` 转换
+3. **窗口样式常量类型**：`WS_*` 是 `WINDOW_STYLE`（`WS_BORDER` 等），但 `ES_*` / `LBS_*` / `BS_*` 等控件样式是裸 `i32`，混用需 `WINDOW_STYLE(bits | ES_LEFT as u32)` 包裹
+4. **扩展样式不能用裸 `0`**：`CreateWindowExW` 首参必须 `WINDOW_EX_STYLE(0)`，即使为 0
+5. **`GetDlgItem` / `FindWindowW` / `CreateWindowExW` 返回 `Result<HWND>`**：调用 `.is_invalid()` 或继续传参前必须先 `unwrap` / `match`，不能直接对 `Result` 操作
+6. **`HMENU` 同样非 nullable**：子窗口 id 借 `hMenu` 字段时传 `HMENU(id as usize as *mut c_void)`，无菜单用 `HMENU::default()`
+7. **消息框 `MessageBoxW(hWnd, ...)`**：首个参数是 `HWND`（非 `Option<HWND>`），勿包 `Some(...)`
+8. **`ReadDirectoryChangesW` 的 bytes_returned 参数**：`Option<*mut u32>` vs `*mut u32`
+9. **`DragQueryFileW` 签名**：`Option<&mut [u16]>` vs `PWSTR`
+10. **`RegOpenKeyExW` 的 hkey 参数**：`HKEY` vs `&mut HKEY`
+11. **`GlobalAlloc` 返回类型**：`Result<HGLOBAL>` vs `HGLOBAL`
 
 遇到问题查 https://docs.rs/windows/0.58/ 对应 API 的签名。
+
+### 桌面图标隐藏（best-effort）
+
+隐藏已归入栅栏的桌面图标依赖 Explorer 的 `SysListView32`（位于 `SHELLDLL_DefView` 之下）。在以下情况会退化为「普通顶层窗口」且不隐藏图标：
+
+- 无 Explorer 桌面（如无桌面的服务器 / 远程会话 / 沙箱）
+- 系统 Shell 被第三方替换（如某些桌面美化工具）
+
+该能力是体验增强，不影响「虚拟分组」核心功能——即使不隐藏，文件物理位置仍只在 `~/Desktop` 原位。
 
 ## 设计文档
 

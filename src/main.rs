@@ -15,6 +15,7 @@ mod dragdrop; // OLE 拖放：手搓 COM vtable（绕过 implement 宏）
 mod fence;
 mod fs;
 mod platform;
+mod settings; // 设置面板（Ctrl+Shift+O）
 
 use std::path::PathBuf;
 use std::sync::Arc;
