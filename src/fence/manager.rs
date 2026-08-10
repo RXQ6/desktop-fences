@@ -61,9 +61,9 @@ impl FenceManager {
             // 注册窗口类
             crate::fence::window::register_class(hinstance);
 
-            // 找 WorkerW
-            let parent = desktop::find_or_create_workerw()
-                .unwrap_or_else(|| HWND(std::ptr::null_mut()));
+            // 顶层窗口（parent = None）：确保稳定收到鼠标输入、可被拖动。
+            // 不嵌入 WorkerW —— 嵌入式会被桌面图标层挡在后面，导致点击/拖动失效。
+            let parent = HWND::default();
 
             // 为每个 fence 创建窗口 + 注册拖放
             let fences: Vec<crate::config::Fence> = {

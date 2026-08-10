@@ -46,11 +46,12 @@ pub fn render_fence_by_id(
         // 找指定栅栏
         let fence = config.fences.iter().find(|f| f.id == fence_id);
 
-        // 3. 标题文字
+        // 3. 标题文字（含拖动提示，让"按住标题栏可拖动"更直观）
         let title = fence
             .map(|f| f.name.as_str())
             .unwrap_or("栅栏");
-        draw_text(hdc, title, 12, 6, HEADER_H - 6, TEXT_COLOR);
+        let title_display = format!("{}   ⠿ 拖动", title);
+        draw_text(hdc, &title_display, 12, 6, HEADER_H - 6, TEXT_COLOR);
 
         // 4. 边框
         draw_border(hdc, 0, 0, width - 1, height - 1, FENCE_BORDER);

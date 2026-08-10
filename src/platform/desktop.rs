@@ -24,6 +24,8 @@ fn lparam_point(x: u16, y: u16) -> LPARAM {
 }
 
 /// 找到或创建一个 WorkerW 窗口
+/// （注：当前栅栏窗口改为顶层窗口，不再嵌入 WorkerW，此函数暂未使用，保留以备回退）
+#[allow(dead_code)]
 pub fn find_or_create_workerw() -> Option<HWND> {
     unsafe {
         let progman = FindWindowW(w!("Progman"), None).ok()?;
@@ -85,6 +87,7 @@ pub fn find_or_create_workerw() -> Option<HWND> {
     }
 }
 
+#[allow(dead_code)]
 unsafe extern "system" fn find_shell_def_view(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let storage = &mut *(lparam.0 as *mut HWND);
     let mut buf = [0u16; 256];
